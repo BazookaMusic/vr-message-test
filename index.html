@@ -10,6 +10,35 @@
 
     let scene, camera, renderer, controller, previewPlane;
     let planeGeometry, previewMaterial;
+    let inputBox, submitButton;
+
+    function createUI() {
+      inputBox = document.createElement('input');
+      inputBox.type = 'text';
+      inputBox.placeholder = 'Enter your message';
+      inputBox.style.position = 'absolute';
+      inputBox.style.bottom = '20px';
+      inputBox.style.left = '50%';
+      inputBox.style.transform = 'translateX(-50%)';
+      inputBox.style.padding = '10px';
+      inputBox.style.fontSize = '16px';
+      document.body.appendChild(inputBox);
+
+      submitButton = document.createElement('button');
+      submitButton.innerText = 'Place Message';
+      submitButton.style.position = 'absolute';
+      submitButton.style.bottom = '50px';
+      submitButton.style.left = '50%';
+      submitButton.style.transform = 'translateX(-50%)';
+      submitButton.style.padding = '10px';
+      submitButton.style.fontSize = '16px';
+      document.body.appendChild(submitButton);
+
+      submitButton.addEventListener('click', () => {
+        placeMessage(inputBox.value);
+        inputBox.value = '';
+      });
+    }
 
     function getHitTestPose(frame, inputSource) {
       const hitTestResults = frame.getHitTestResults(inputSource.targetRaySpace);
@@ -33,11 +62,10 @@
       return new THREE.CanvasTexture(canvas);
     }
 
-    function placeMessage(event) {
-      const message = prompt('Enter your message:');
+    function placeMessage(message) {
       if (!message) return;
 
-      const pose = getHitTestPose(event.frame, event.inputSource);
+      const pose = getHitTestPose(renderer.xr.getFrame(), controller);
       if (!pose) return;
 
       const planeMaterial = new THREE.MeshBasicMaterial({
@@ -48,26 +76,6 @@
       plane.position.copy(pose.transform.position);
       plane.lookAt(camera.position);
       scene.add(plane);
-    }
-
-    function updatePreview(event) {
-      if (!previewPlane) {
-        previewPlane = new THREE.Mesh(planeGeometry.clone(), previewMaterial);
-        scene.add(previewPlane);
-      }
-
-      const pose = getHitTestPose(event.frame, event.inputSource);
-      if (pose && previewPlane) {
-        previewPlane.position.copy(pose.transform.position);
-        previewPlane.lookAt(camera.position);
-      }
-    }
-
-    function removePreview() {
-      if (previewPlane) {
-        scene.remove(previewPlane);
-        previewPlane = null;
-      }
     }
 
     function init() {
@@ -87,11 +95,9 @@
       });
 
       document.body.appendChild(ARButton.createButton(renderer));
+      createUI();
 
       controller = renderer.xr.getController(0);
-      controller.addEventListener('select', placeMessage);
-      controller.addEventListener('squeezestart', updatePreview);
-      controller.addEventListener('squeezeend', removePreview);
       scene.add(controller);
 
       renderer.setAnimationLoop(() => {
