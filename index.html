@@ -8,8 +8,8 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.174.0/examples/jsm/webxr/ARButton.js';
 
-    let scene, camera, renderer, controller, previewPlane;
-    let planeGeometry, previewMaterial;
+    let scene, camera, renderer, controller, previewPlane, highlightPlane;
+    let planeGeometry, previewMaterial, highlightMaterial;
     let inputBox;
 
     function createUI() {
@@ -25,11 +25,10 @@
       document.body.appendChild(inputBox);
     }
 
-    function getHitTestPose(frame, inputSource) {
-      const hitTestResults = frame.getHitTestResults(inputSource.targetRaySpace);
+    function getHitTestPose(frame, referenceSpace) {
+      const hitTestResults = frame.getHitTestResults(renderer.xr.getReferenceSpace());
       if (hitTestResults.length > 0) {
-        const hit = hitTestResults[0];
-        return hit.getPose(renderer.xr.getReferenceSpace());
+        return hitTestResults[0].getPose(referenceSpace);
       }
       return null;
     }
@@ -47,12 +46,25 @@
       return new THREE.CanvasTexture(canvas);
     }
 
+    function highlightObject(position) {
+      if (!highlightPlane) {
+        highlightPlane = new THREE.Mesh(planeGeometry.clone(), highlightMaterial);
+        scene.add(highlightPlane);
+      }
+      highlightPlane.position.copy(position);
+      highlightPlane.lookAt(camera.position);
+    }
+
     function placeMessage(event) {
       const message = inputBox.value.trim();
       if (!message) return;
 
-      const pose = getHitTestPose(event.frame, event.inputSource);
+      const frame = event.frame;
+      const referenceSpace = renderer.xr.getReferenceSpace();
+      const pose = getHitTestPose(frame, referenceSpace);
       if (!pose) return;
+
+      highlightObject(pose.transform.position);
 
       const planeMaterial = new THREE.MeshBasicMaterial({
         map: createTextTexture(message),
@@ -64,6 +76,14 @@
       scene.add(plane);
 
       inputBox.value = '';
+    }
+
+    function onScreenTap(event) {
+      if (!renderer.xr.isPresenting) return;
+      const session = renderer.xr.getSession();
+      session.requestAnimationFrame((time, frame) => {
+        placeMessage({ frame });
+      });
     }
 
     function init() {
@@ -82,12 +102,20 @@
         opacity: 0.5,
       });
 
+      highlightMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.7,
+      });
+
       document.body.appendChild(ARButton.createButton(renderer));
       createUI();
 
       controller = renderer.xr.getController(0);
-      controller.addEventListener('select', placeMessage);
       scene.add(controller);
+      
+      document.body.addEventListener('click', onScreenTap);
 
       renderer.setAnimationLoop(() => {
         renderer.render(scene, camera);
