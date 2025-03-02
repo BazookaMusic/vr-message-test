@@ -10,7 +10,7 @@
 
     let scene, camera, renderer, controller;
     let hitTestSource = null, xrReferenceSpace;
-    let planeGeometry, highlightMaterial, highlightPlane;
+    let planeGeometry, reticle;
     let inputBox, xrSession;
 
     function createUI() {
@@ -23,6 +23,7 @@
       inputBox.style.transform = 'translateX(-50%)';
       inputBox.style.padding = '10px';
       inputBox.style.fontSize = '16px';
+      inputBox.style.zIndex = '10';
       document.body.appendChild(inputBox);
     }
 
@@ -39,40 +40,22 @@
       return new THREE.CanvasTexture(canvas);
     }
 
-    function highlightObject(position) {
-      if (!highlightPlane) {
-        highlightPlane = new THREE.Mesh(planeGeometry.clone(), highlightMaterial);
-        scene.add(highlightPlane);
-      }
-      highlightPlane.position.copy(position);
-      highlightPlane.lookAt(camera.position);
-    }
-
     function placeMessage(position) {
       const message = inputBox.value.trim();
       if (!message) return;
-      highlightObject(position);
-      const planeMaterial = new THREE.MeshBasicMaterial({
+      const material = new THREE.MeshBasicMaterial({
         map: createTextTexture(message),
         side: THREE.DoubleSide,
       });
-      const plane = new THREE.Mesh(planeGeometry.clone(), planeMaterial);
-      plane.position.copy(position);
-      plane.lookAt(camera.position);
-      scene.add(plane);
+      const messagePlane = new THREE.Mesh(planeGeometry.clone(), material);
+      messagePlane.position.copy(position);
+      messagePlane.lookAt(camera.position);
+      scene.add(messagePlane);
       inputBox.value = '';
     }
 
-    function onSelect(event) {
-      if (!hitTestSource) return;
-      const frame = event.frame;
-      const hitTestResults = frame.getHitTestResults(hitTestSource);
-      if (hitTestResults.length > 0) {
-        const hitPose = hitTestResults[0].getPose(xrReferenceSpace);
-        if (hitPose) {
-          placeMessage(hitPose.transform.position);
-        }
-      }
+    function onSelect() {
+      if (reticle.visible) placeMessage(reticle.position);
     }
 
     function init() {
@@ -84,18 +67,26 @@
       document.body.appendChild(renderer.domElement);
 
       planeGeometry = new THREE.PlaneGeometry(0.3, 0.15);
-      highlightMaterial = new THREE.MeshBasicMaterial({
-        color: 0xff0000,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.7,
-      });
+
+      // Create reticle to visualize hit test results
+      reticle = new THREE.Mesh(
+        new THREE.RingGeometry(0.07, 0.09, 32).rotateX(- Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+      );
+      reticle.matrixAutoUpdate = false;
+      reticle.visible = false;
+      scene.add(reticle);
 
       const arButton = ARButton.createButton(renderer, {
         requiredFeatures: ['hit-test'],
         optionalFeatures: ['dom-overlay'],
         domOverlay: { root: document.body }
       });
+      arButton.style.position = 'absolute';
+      arButton.style.top = '20px';
+      arButton.style.left = '50%';
+      arButton.style.transform = 'translateX(-50%)';
+      arButton.style.zIndex = '10';
       document.body.appendChild(arButton);
 
       arButton.addEventListener('click', () => {
@@ -115,10 +106,22 @@
       scene.add(controller);
 
       createUI();
+      renderer.setAnimationLoop(render);
+    }
 
-      renderer.setAnimationLoop(() => {
-        renderer.render(scene, camera);
-      });
+    function render(timestamp, frame) {
+      if (frame && hitTestSource) {
+        const hitTestResults = frame.getHitTestResults(hitTestSource);
+        if (hitTestResults.length) {
+          const hit = hitTestResults[0];
+          const pose = hit.getPose(xrReferenceSpace);
+          reticle.visible = true;
+          reticle.matrix.fromArray(pose.transform.matrix);
+        } else {
+          reticle.visible = false;
+        }
+      }
+      renderer.render(scene, camera);
     }
 
     init();
