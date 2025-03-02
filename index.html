@@ -8,9 +8,10 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.174.0/examples/jsm/webxr/ARButton.js';
 
-    let scene, camera, renderer, controller, previewPlane, highlightPlane;
-    let planeGeometry, previewMaterial, highlightMaterial;
-    let inputBox;
+    let scene, camera, renderer, controller;
+    let hitTestSource = null, xrReferenceSpace;
+    let planeGeometry, highlightMaterial, highlightPlane;
+    let inputBox, xrSession;
 
     function createUI() {
       inputBox = document.createElement('input');
@@ -23,14 +24,6 @@
       inputBox.style.padding = '10px';
       inputBox.style.fontSize = '16px';
       document.body.appendChild(inputBox);
-    }
-
-    function getHitTestPose(frame, referenceSpace) {
-      const hitTestResults = frame.getHitTestResults(renderer.xr.getReferenceSpace());
-      if (hitTestResults.length > 0) {
-        return hitTestResults[0].getPose(referenceSpace);
-      }
-      return null;
     }
 
     function createTextTexture(message) {
@@ -55,35 +48,31 @@
       highlightPlane.lookAt(camera.position);
     }
 
-    function placeMessage(event) {
+    function placeMessage(position) {
       const message = inputBox.value.trim();
       if (!message) return;
-
-      const frame = event.frame;
-      const referenceSpace = renderer.xr.getReferenceSpace();
-      const pose = getHitTestPose(frame, referenceSpace);
-      if (!pose) return;
-
-      highlightObject(pose.transform.position);
-
+      highlightObject(position);
       const planeMaterial = new THREE.MeshBasicMaterial({
         map: createTextTexture(message),
         side: THREE.DoubleSide,
       });
       const plane = new THREE.Mesh(planeGeometry.clone(), planeMaterial);
-      plane.position.copy(pose.transform.position);
+      plane.position.copy(position);
       plane.lookAt(camera.position);
       scene.add(plane);
-
       inputBox.value = '';
     }
 
-    function onScreenTap(event) {
-      if (!renderer.xr.isPresenting) return;
-      const session = renderer.xr.getSession();
-      session.requestAnimationFrame((time, frame) => {
-        placeMessage({ frame });
-      });
+    function onSelect(event) {
+      if (!hitTestSource) return;
+      const frame = event.frame;
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      if (hitTestResults.length > 0) {
+        const hitPose = hitTestResults[0].getPose(xrReferenceSpace);
+        if (hitPose) {
+          placeMessage(hitPose.transform.position);
+        }
+      }
     }
 
     function init() {
@@ -95,13 +84,6 @@
       document.body.appendChild(renderer.domElement);
 
       planeGeometry = new THREE.PlaneGeometry(0.3, 0.15);
-      previewMaterial = new THREE.MeshBasicMaterial({
-        color: 0x888888,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.5,
-      });
-
       highlightMaterial = new THREE.MeshBasicMaterial({
         color: 0xff0000,
         side: THREE.DoubleSide,
@@ -109,13 +91,30 @@
         opacity: 0.7,
       });
 
-      document.body.appendChild(ARButton.createButton(renderer));
-      createUI();
+      const arButton = ARButton.createButton(renderer, {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['dom-overlay'],
+        domOverlay: { root: document.body }
+      });
+      document.body.appendChild(arButton);
+
+      arButton.addEventListener('click', () => {
+        xrSession = renderer.xr.getSession();
+        xrSession.requestReferenceSpace('local').then((refSpace) => {
+          xrReferenceSpace = refSpace;
+        });
+        xrSession.requestReferenceSpace('viewer').then((viewerSpace) => {
+          xrSession.requestHitTestSource({ space: viewerSpace }).then((source) => {
+            hitTestSource = source;
+          });
+        });
+      });
 
       controller = renderer.xr.getController(0);
+      controller.addEventListener('select', onSelect);
       scene.add(controller);
-      
-      document.body.addEventListener('click', onScreenTap);
+
+      createUI();
 
       renderer.setAnimationLoop(() => {
         renderer.render(scene, camera);
