@@ -10,7 +10,7 @@
 
     let scene, camera, renderer, controller, previewPlane;
     let planeGeometry, previewMaterial;
-    let inputBox, submitButton;
+    let inputBox;
 
     function createUI() {
       inputBox = document.createElement('input');
@@ -23,21 +23,6 @@
       inputBox.style.padding = '10px';
       inputBox.style.fontSize = '16px';
       document.body.appendChild(inputBox);
-
-      submitButton = document.createElement('button');
-      submitButton.innerText = 'Place Message';
-      submitButton.style.position = 'absolute';
-      submitButton.style.bottom = '50px';
-      submitButton.style.left = '50%';
-      submitButton.style.transform = 'translateX(-50%)';
-      submitButton.style.padding = '10px';
-      submitButton.style.fontSize = '16px';
-      document.body.appendChild(submitButton);
-
-      submitButton.addEventListener('click', () => {
-        placeMessage(inputBox.value);
-        inputBox.value = '';
-      });
     }
 
     function getHitTestPose(frame, inputSource) {
@@ -62,10 +47,11 @@
       return new THREE.CanvasTexture(canvas);
     }
 
-    function placeMessage(message) {
+    function placeMessage(event) {
+      const message = inputBox.value.trim();
       if (!message) return;
 
-      const pose = getHitTestPose(renderer.xr.getFrame(), controller);
+      const pose = getHitTestPose(event.frame, event.inputSource);
       if (!pose) return;
 
       const planeMaterial = new THREE.MeshBasicMaterial({
@@ -76,6 +62,8 @@
       plane.position.copy(pose.transform.position);
       plane.lookAt(camera.position);
       scene.add(plane);
+
+      inputBox.value = '';
     }
 
     function init() {
@@ -98,6 +86,7 @@
       createUI();
 
       controller = renderer.xr.getController(0);
+      controller.addEventListener('select', placeMessage);
       scene.add(controller);
 
       renderer.setAnimationLoop(() => {
