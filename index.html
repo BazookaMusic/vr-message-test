@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>XRKit Crosshair with Preview Message</title>
+  <title>XRKit Crosshair – Plane & Depth Detection Refactor</title>
   <style>
     body {
       margin: 0;
@@ -12,28 +12,52 @@
       font-family: system-ui, sans-serif;
       overflow: hidden;
     }
+    #status {
+      position: absolute;
+      left: 50%;
+      top: 10%;
+      transform: translateX(-50%);
+      font-size: 1rem;
+      padding: 6px 12px;
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 8px;
+      opacity: 0.85;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    #status.hidden { opacity: 0; }
   </style>
 </head>
 <body>
+  <div id="status">Scanning environment…</div>
+
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.175.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.175.0/examples/jsm/webxr/ARButton.js';
 
+    /* ------------------------------------------------------------------
+       Globals
+    ------------------------------------------------------------------*/
     let scene, camera, renderer;
     let crosshair, previewSprite;
-    const baseScale = 0.05;
+    const baseScale = 0.05; // 5 cm sprite in meter units
 
-    // Hit‑test helpers
+    // XR state flags / resources
     let hitTestSource = null;
     let hitTestSourceRequested = false;
     let hasHit = false;
+    let firstSurfaceFound = false;
 
+    const statusEl = document.getElementById('status');
+
+    /* ------------------------------------------------------------------
+       Boot
+    ------------------------------------------------------------------*/
     init();
 
-    function init() {
-      scene = new THREE.Scene();
-      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
-
+    function init () {
+      scene   = new THREE.Scene();
+      camera  = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
       scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -42,85 +66,103 @@
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      // AR button — hit‑test is required for surface detection
-      document.body.appendChild(
-        ARButton.createButton(renderer, {
-          requiredFeatures: ['hit-test'],
-          optionalFeatures: ['dom-overlay', 'local-floor'],
-          domOverlay: { root: document.body }
-        })
-      );
+      /* --- Request AR session ------------------------------------------------*/
+      const sessionInit = {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: [
+          'dom-overlay',
+          'local-floor',
+          // NEW incubating features
+          'plane-detection', // enable XRFrame.worldInformation.detectedPlanes
+          'depth-sensing'    // access live depth map for faster hits
+        ],
+        domOverlay: { root: document.body },
+        depthSensing: {
+          usagePreference: ['cpu-optimized'],
+          dataFormatPreference: ['luminance-alpha']
+        }
+      };
+      document.body.appendChild(ARButton.createButton(renderer, sessionInit));
 
-      // Crosshair sprite positioned 0.8 m ahead in view space
+      /* --- Scene content -----------------------------------------------------*/
       crosshair = makeCrosshairSprite();
-      crosshair.position.set(0, 0, -0.8);
+      crosshair.position.set(0, 0, -0.8); // 80 cm forward
       camera.add(crosshair);
       scene.add(camera);
 
-      // Preview message sprite (initially hidden)
       previewSprite = makeTextSprite('Detected!');
       previewSprite.visible = false;
       scene.add(previewSprite);
 
+      /* --- Events & loop -----------------------------------------------------*/
       window.addEventListener('resize', onResize);
       renderer.setAnimationLoop(render);
     }
 
-    function onResize() {
+    function onResize () {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    function render(timestamp, frame) {
+    /* ------------------------------------------------------------------
+       Render loop
+    ------------------------------------------------------------------*/
+    function render (timestamp, frame) {
       const t = Date.now() * 0.005;
       const basePulse = 0.002 * Math.sin(t);
 
       if (frame) {
-        const session = renderer.xr.getSession();
+        const session        = renderer.xr.getSession();
         const referenceSpace = renderer.xr.getReferenceSpace();
 
-        // Request hit‑test source once per session
+        /* --- Lazy‑instantiate hit‑test source --------------------------------*/
         if (!hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer').then((refSpace) => {
-            session.requestHitTestSource({ space: refSpace }).then((source) => {
-              hitTestSource = source;
-            });
-          });
+          session.requestReferenceSpace('viewer')
+            .then(space => session.requestHitTestSource({ space }))
+            .then(source => { hitTestSource = source; });
+
           session.addEventListener('end', () => {
             hitTestSourceRequested = false;
             hitTestSource = null;
+            firstSurfaceFound = false;
+            statusEl.textContent = 'Scanning environment…';
+            statusEl.classList.remove('hidden');
           });
           hitTestSourceRequested = true;
         }
 
+        /* --- XR Plane detection (incubations) --------------------------------*/
+        const planes = frame.worldInformation?.detectedPlanes;
+        const planeCount = planes ? planes.size : 0;
+        if (planeCount && !firstSurfaceFound) {
+          firstSurfaceFound = true;
+          statusEl.classList.add('hidden');
+        }
+
+        /* --- Hit‑test using depth / planes -----------------------------------*/
         hasHit = false;
         if (hitTestSource) {
-          const hitTestResults = frame.getHitTestResults(hitTestSource);
-          if (hitTestResults.length) {
-            const hit = hitTestResults[0];
-            const pose = hit.getPose(referenceSpace);
-            if (pose) {
-              const { x, y, z } = pose.transform.position;
-              previewSprite.position.set(x, y, z);
-              previewSprite.quaternion.set(
-                pose.transform.orientation.x,
-                pose.transform.orientation.y,
-                pose.transform.orientation.z,
-                pose.transform.orientation.w
-              );
+          const hits = frame.getHitTestResults(hitTestSource);
+          if (hits.length) {
+            const hitPose = hits[0].getPose(referenceSpace);
+            if (hitPose) {
+              const { position, orientation } = hitPose.transform;
+              previewSprite.position.set(position.x, position.y, position.z);
+              previewSprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
               previewSprite.visible = true;
               hasHit = true;
+              if (!firstSurfaceFound) {
+                firstSurfaceFound = true;
+                statusEl.classList.add('hidden');
+              }
             }
           }
         }
-
-        if (!hasHit) {
-          previewSprite.visible = false;
-        }
+        if (!hasHit) previewSprite.visible = false;
       }
 
-      // Update crosshair appearance
+      /* --- Crosshair visual --------------------------------------------------*/
       const highlight = hasHit ? 0.015 : 0;
       const scale = baseScale + highlight + basePulse;
       crosshair.scale.set(scale, scale, 1);
@@ -129,9 +171,10 @@
       renderer.render(scene, camera);
     }
 
-    // === Helpers ===
-
-    function makeCrosshairSprite() {
+    /* ------------------------------------------------------------------
+       Helpers
+    ------------------------------------------------------------------*/
+    function makeCrosshairSprite () {
       const size = 256;
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = size;
@@ -140,39 +183,32 @@
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 12;
       ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(size / 2, size * 0.1); ctx.lineTo(size / 2, size * 0.9); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(size * 0.1, size / 2); ctx.lineTo(size * 0.9, size / 2); ctx.stroke();
 
-      ctx.beginPath();
-      ctx.moveTo(size / 2, size * 0.1);
-      ctx.lineTo(size / 2, size * 0.9);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(size * 0.1, size / 2);
-      ctx.lineTo(size * 0.9, size / 2);
-      ctx.stroke();
-
-      const texture = new THREE.CanvasTexture(canvas);
+      const texture  = new THREE.CanvasTexture(canvas);
       const material = new THREE.SpriteMaterial({ map: texture, transparent: true, color: 0xffffff });
-      const sprite = new THREE.Sprite(material);
+      const sprite   = new THREE.Sprite(material);
       sprite.scale.set(baseScale, baseScale, 1);
       return sprite;
     }
 
-    function makeTextSprite(message) {
-      const canvasSize = 512;
+    function makeTextSprite (message) {
+      const size = 512;
       const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = canvasSize;
+      canvas.width = canvas.height = size;
       const ctx = canvas.getContext('2d');
 
       ctx.font = 'bold 80px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = '#00ff88';
-      ctx.fillText(message, canvasSize / 2, canvasSize / 2, canvasSize - 60);
+      ctx.fillText(message, size / 2, size / 2, size - 60);
 
-      const texture = new THREE.CanvasTexture(canvas);
+      const texture  = new THREE.CanvasTexture(canvas);
       const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-      const sprite = new THREE.Sprite(material);
-      const scale = 0.25; // metres
+      const sprite   = new THREE.Sprite(material);
+      const scale    = 0.25;
       sprite.scale.set(scale, scale * (canvas.height / canvas.width), 1);
       return sprite;
     }
