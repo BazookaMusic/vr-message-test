@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>XRKit Crosshair with Surface Detection</title>
+  <title>XRKit Crosshair with Preview Message</title>
   <style>
     body {
       margin: 0;
@@ -20,7 +20,7 @@
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.175.0/examples/jsm/webxr/ARButton.js';
 
     let scene, camera, renderer;
-    let crosshair;
+    let crosshair, previewSprite;
     const baseScale = 0.05;
 
     // Hit‑test helpers
@@ -51,11 +51,16 @@
         })
       );
 
-      // Crosshair sprite positioned 0.8 m ahead
+      // Crosshair sprite positioned 0.8 m ahead in view space
       crosshair = makeCrosshairSprite();
       crosshair.position.set(0, 0, -0.8);
       camera.add(crosshair);
       scene.add(camera);
+
+      // Preview message sprite (initially hidden)
+      previewSprite = makeTextSprite('Detected!');
+      previewSprite.visible = false;
+      scene.add(previewSprite);
 
       window.addEventListener('resize', onResize);
       renderer.setAnimationLoop(render);
@@ -68,12 +73,12 @@
     }
 
     function render(timestamp, frame) {
-      // Pulse animation for visibility
       const t = Date.now() * 0.005;
       const basePulse = 0.002 * Math.sin(t);
 
       if (frame) {
         const session = renderer.xr.getSession();
+        const referenceSpace = renderer.xr.getReferenceSpace();
 
         // Request hit‑test source once per session
         if (!hitTestSourceRequested) {
@@ -89,13 +94,29 @@
           hitTestSourceRequested = true;
         }
 
-        // Determine whether the ray through the center hits a real surface this frame
         hasHit = false;
         if (hitTestSource) {
           const hitTestResults = frame.getHitTestResults(hitTestSource);
           if (hitTestResults.length) {
-            hasHit = true;
+            const hit = hitTestResults[0];
+            const pose = hit.getPose(referenceSpace);
+            if (pose) {
+              const { x, y, z } = pose.transform.position;
+              previewSprite.position.set(x, y, z);
+              previewSprite.quaternion.set(
+                pose.transform.orientation.x,
+                pose.transform.orientation.y,
+                pose.transform.orientation.z,
+                pose.transform.orientation.w
+              );
+              previewSprite.visible = true;
+              hasHit = true;
+            }
           }
+        }
+
+        if (!hasHit) {
+          previewSprite.visible = false;
         }
       }
 
@@ -108,7 +129,8 @@
       renderer.render(scene, camera);
     }
 
-    // Helper: create a crosshair sprite from a canvas texture
+    // === Helpers ===
+
     function makeCrosshairSprite() {
       const size = 256;
       const canvas = document.createElement('canvas');
@@ -119,13 +141,10 @@
       ctx.lineWidth = 12;
       ctx.lineCap = 'round';
 
-      // Vertical line
       ctx.beginPath();
       ctx.moveTo(size / 2, size * 0.1);
       ctx.lineTo(size / 2, size * 0.9);
       ctx.stroke();
-
-      // Horizontal line
       ctx.beginPath();
       ctx.moveTo(size * 0.1, size / 2);
       ctx.lineTo(size * 0.9, size / 2);
@@ -135,6 +154,26 @@
       const material = new THREE.SpriteMaterial({ map: texture, transparent: true, color: 0xffffff });
       const sprite = new THREE.Sprite(material);
       sprite.scale.set(baseScale, baseScale, 1);
+      return sprite;
+    }
+
+    function makeTextSprite(message) {
+      const canvasSize = 512;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = canvasSize;
+      const ctx = canvas.getContext('2d');
+
+      ctx.font = 'bold 80px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#00ff88';
+      ctx.fillText(message, canvasSize / 2, canvasSize / 2, canvasSize - 60);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+      const sprite = new THREE.Sprite(material);
+      const scale = 0.25; // metres
+      sprite.scale.set(scale, scale * (canvas.height / canvas.width), 1);
       return sprite;
     }
   </script>
