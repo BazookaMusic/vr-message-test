@@ -66,11 +66,9 @@
       document.body.appendChild(ARButton.createButton(renderer, sessionInit));
 
       // Reticle helper (always visible)
-      reticle = new THREE.Mesh(
-        new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
-        new THREE.MeshBasicMaterial({ color: 0x666666 }) // gray initially
-      );
-      reticle.matrixAutoUpdate = true;
+      const ringGeo = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0x666666, side: THREE.DoubleSide });
+      reticle = new THREE.Mesh(ringGeo, ringMat);
       reticle.visible = true; // always show
       scene.add(reticle);
 
@@ -100,7 +98,6 @@
       // Place at reticle pose (which is already positioned on the surface)
       sprite.position.copy(reticle.position);
       sprite.quaternion.copy(reticle.quaternion);
-      sprite.scale.copy(reticle.scale);
       scene.add(sprite);
     }
 
@@ -128,7 +125,7 @@
       return sprite;
     }
 
-    // Temporary vector reused each frame
+    // Temporary vectors reused each frame
     const forward = new THREE.Vector3();
 
     // === Main render / hit‑test loop ===
@@ -162,15 +159,15 @@
             const { position, orientation } = pose.transform;
             reticle.position.set(position.x, position.y, position.z);
             reticle.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
-            reticle.material.color.set(0x00ff88); // green
+            reticle.material.color.set(0x00ff88); // green when hit
             hasHit = true;
           }
         }
 
         if (!hasHit) {
-          // No surface found => keep reticle 2 m in front of camera, gray color
+          // No surface found => keep reticle 1.5 m in front of camera, gray color
           camera.getWorldDirection(forward);
-          reticle.position.copy(camera.position).add(forward.multiplyScalar(2));
+          reticle.position.copy(camera.position).add(forward.multiplyScalar(1.5));
           reticle.quaternion.copy(camera.quaternion);
           reticle.material.color.set(0x666666); // gray
         }
