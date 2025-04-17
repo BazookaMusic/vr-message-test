@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>XRKit Crosshair – Anchored Messages</title>
+  <title>XRKit Anchored Messages with XRAnchors</title>
   <style>
     body {
       margin: 0;
@@ -40,16 +40,17 @@
     ------------------------------------------------------------------*/
     let scene, camera, renderer;
     let crosshair, previewSprite;
-    const baseScale = 0.05; // 5 cm sprite in meter units
+    const baseScale = 0.05;
 
-    // XR state / resources
+    // XR resources
     let hitTestSource = null;
     let hitTestSourceRequested = false;
-    let lastHitPose = null; // store pose for on‑tap anchoring
+    let lastHitResult = null;   // store full hit‑test result for anchor creation
     let hasHit = false;
     let firstSurfaceFound = false;
 
-    // Anchored messages
+    // Anchored markers
+    const anchors = []; // { anchor, sprite }
     let msgCount = 0;
 
     const statusEl = document.getElementById('status');
@@ -74,6 +75,7 @@
       const sessionInit = {
         requiredFeatures: ['hit-test'],
         optionalFeatures: [
+          'anchors',          // <-- new
           'dom-overlay',
           'local-floor',
           'plane-detection',
@@ -97,12 +99,11 @@
       previewSprite.visible = false;
       scene.add(previewSprite);
 
-      /* --- Tap handling (controller 0) --------------------------------------*/
+      /* --- Tap handling -----------------------------------------------------*/
       const controller = renderer.xr.getController(0);
       controller.addEventListener('select', onSelect);
       scene.add(controller);
 
-      /* --- Events & loop ----------------------------------------------------*/
       window.addEventListener('resize', onResize);
       renderer.setAnimationLoop(render);
     }
@@ -114,20 +115,26 @@
     }
 
     /* ------------------------------------------------------------------
-       User tap: anchor a numbered message at last detected pose
+       On user tap — create XRAnchor + numbered sprite
     ------------------------------------------------------------------*/
     function onSelect () {
-      if (!lastHitPose) return; // nothing detected
+      if (!lastHitResult || !lastHitResult.createAnchor) return; // anchors unsupported or no hit
 
-      // Create numbered marker
       msgCount += 1;
-      const marker = makeTextSprite(String(msgCount));
+      const sprite = makeTextSprite(String(msgCount));
+      sprite.visible = false; // will become visible when anchor pose is tracked
+      scene.add(sprite);
 
-      const { position, orientation } = lastHitPose.transform;
-      marker.position.set(position.x, position.y, position.z);
-      marker.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
-
-      scene.add(marker);
+      // Create anchor at the hit pose
+      lastHitResult.createAnchor().then(anchor => {
+        anchors.push({ anchor, sprite });
+      }).catch(() => {
+        // Fallback: show sprite at static pose
+        const { position, orientation } = lastHitResult.getPose(renderer.xr.getReferenceSpace()).transform;
+        sprite.position.set(position.x, position.y, position.z);
+        sprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
+        sprite.visible = true;
+      });
     }
 
     /* ------------------------------------------------------------------
@@ -150,13 +157,24 @@
           session.addEventListener('end', () => {
             hitTestSourceRequested = false;
             hitTestSource = null;
-            lastHitPose = null;
             firstSurfaceFound = false;
             statusEl.textContent = 'Scanning environment…';
             statusEl.classList.remove('hidden');
+            anchors.length = 0;
           });
           hitTestSourceRequested = true;
         }
+
+        /* --- Update anchored sprites --------------------------------------*/
+        anchors.forEach(({ anchor, sprite }) => {
+          const pose = frame.getPose(anchor.anchorSpace, referenceSpace);
+          if (pose) {
+            const { position, orientation } = pose.transform;
+            sprite.position.set(position.x, position.y, position.z);
+            sprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
+            sprite.visible = true;
+          }
+        });
 
         /* --- Plane detection banner ---------------------------------------*/
         const planes = frame.worldInformation?.detectedPlanes;
@@ -165,15 +183,16 @@
           statusEl.classList.add('hidden');
         }
 
-        /* --- Hit‑test ------------------------------------------------------*/
+        /* --- Hit‑test raycast ---------------------------------------------*/
         hasHit = false;
+        lastHitResult = null;
         if (hitTestSource) {
           const hits = frame.getHitTestResults(hitTestSource);
           if (hits.length) {
-            const hitPose = hits[0].getPose(referenceSpace);
+            const hit = hits[0];
+            const hitPose = hit.getPose(referenceSpace);
             if (hitPose) {
-              lastHitPose = hitPose; // store for anchoring
-
+              lastHitResult = hit;
               const { position, orientation } = hitPose.transform;
               previewSprite.position.set(position.x, position.y, position.z);
               previewSprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
@@ -186,10 +205,7 @@
             }
           }
         }
-        if (!hasHit) {
-          previewSprite.visible = false;
-          lastHitPose = null;
-        }
+        if (!hasHit) previewSprite.visible = false;
       }
 
       /* --- Crosshair visuals ----------------------------------------------*/
@@ -202,7 +218,7 @@
     }
 
     /* ------------------------------------------------------------------
-       Helper functions
+       Helpers
     ------------------------------------------------------------------*/
     function makeCrosshairSprite () {
       const size = 256;
