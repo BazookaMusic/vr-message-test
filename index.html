@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>XRKit Simple Cube</title>
+  <title>XRKit Crosshair Reticle</title>
   <style>
     body {
       margin: 0;
@@ -20,7 +20,7 @@
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.175.0/examples/jsm/webxr/ARButton.js';
 
     let scene, camera, renderer;
-    let cube;
+    let crosshair;
 
     init();
 
@@ -29,9 +29,8 @@
       scene = new THREE.Scene();
       camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-      // Basic ambient light so the cube is visible
-      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
-      scene.add(light);
+      // Subtle ambient light
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
 
       // Renderer
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -40,7 +39,7 @@
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      // AR button
+      // AR button (DOM overlay enables browser UI while in AR)
       document.body.appendChild(
         ARButton.createButton(renderer, {
           optionalFeatures: ['dom-overlay'],
@@ -48,14 +47,10 @@
         })
       );
 
-      // Cube: 20 cm each side
-      const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-      const material = new THREE.MeshNormalMaterial();
-      cube = new THREE.Mesh(geometry, material);
-
-      // Place cube 0.5 m in front of the camera (local space)
-      cube.position.set(0, 0, -0.5);
-      camera.add(cube); // attach so it stays at constant distance
+      // Crosshair sprite positioned 0.8 m ahead
+      crosshair = makeCrosshairSprite();
+      crosshair.position.set(0, 0, -0.8);
+      camera.add(crosshair); // lock to view center
       scene.add(camera);
 
       window.addEventListener('resize', onResize);
@@ -69,11 +64,42 @@
     }
 
     function render() {
-      // Optional: slow rotation for visual feedback
-      cube.rotation.x += 0.01;
-      cube.rotation.y += 0.02;
+      // Small pulse animation for visibility
+      const scale = 0.05 + 0.005 * Math.sin(Date.now() * 0.005);
+      crosshair.scale.set(scale, scale, 1);
 
       renderer.render(scene, camera);
+    }
+
+    // Helper: create a crosshair sprite from a canvas texture
+    function makeCrosshairSprite() {
+      const size = 256;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 12;
+      ctx.lineCap = 'round';
+
+      // Vertical line
+      ctx.beginPath();
+      ctx.moveTo(size / 2, size * 0.1);
+      ctx.lineTo(size / 2, size * 0.9);
+      ctx.stroke();
+
+      // Horizontal line
+      ctx.beginPath();
+      ctx.moveTo(size * 0.1, size / 2);
+      ctx.lineTo(size * 0.9, size / 2);
+      ctx.stroke();
+
+      const texture = new THREE.CanvasTexture(canvas);
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+      const sprite = new THREE.Sprite(material);
+      // Initial uniform scale (metre units) – updated each frame in render()
+      sprite.scale.set(0.05, 0.05, 1);
+      return sprite;
     }
   </script>
 </body>
