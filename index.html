@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>XRKit Crosshair – Plane & Depth Detection Refactor</title>
+  <title>XRKit Crosshair – Anchored Messages</title>
   <style>
     body {
       margin: 0;
@@ -19,7 +19,7 @@
       transform: translateX(-50%);
       font-size: 1rem;
       padding: 6px 12px;
-      background: rgba(0, 0, 0, 0.5);
+      background: rgba(0, 0, 0, 0.6);
       border-radius: 8px;
       opacity: 0.85;
       pointer-events: none;
@@ -42,11 +42,15 @@
     let crosshair, previewSprite;
     const baseScale = 0.05; // 5 cm sprite in meter units
 
-    // XR state flags / resources
+    // XR state / resources
     let hitTestSource = null;
     let hitTestSourceRequested = false;
+    let lastHitPose = null; // store pose for on‑tap anchoring
     let hasHit = false;
     let firstSurfaceFound = false;
+
+    // Anchored messages
+    let msgCount = 0;
 
     const statusEl = document.getElementById('status');
 
@@ -56,8 +60,8 @@
     init();
 
     function init () {
-      scene   = new THREE.Scene();
-      camera  = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+      scene  = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
       scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -66,15 +70,14 @@
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      /* --- Request AR session ------------------------------------------------*/
+      /* --- Request AR session ----------------------------------------------*/
       const sessionInit = {
         requiredFeatures: ['hit-test'],
         optionalFeatures: [
           'dom-overlay',
           'local-floor',
-          // NEW incubating features
-          'plane-detection', // enable XRFrame.worldInformation.detectedPlanes
-          'depth-sensing'    // access live depth map for faster hits
+          'plane-detection',
+          'depth-sensing'
         ],
         domOverlay: { root: document.body },
         depthSensing: {
@@ -84,9 +87,9 @@
       };
       document.body.appendChild(ARButton.createButton(renderer, sessionInit));
 
-      /* --- Scene content -----------------------------------------------------*/
+      /* --- Scene content ----------------------------------------------------*/
       crosshair = makeCrosshairSprite();
-      crosshair.position.set(0, 0, -0.8); // 80 cm forward
+      crosshair.position.set(0, 0, -0.8);
       camera.add(crosshair);
       scene.add(camera);
 
@@ -94,7 +97,12 @@
       previewSprite.visible = false;
       scene.add(previewSprite);
 
-      /* --- Events & loop -----------------------------------------------------*/
+      /* --- Tap handling (controller 0) --------------------------------------*/
+      const controller = renderer.xr.getController(0);
+      controller.addEventListener('select', onSelect);
+      scene.add(controller);
+
+      /* --- Events & loop ----------------------------------------------------*/
       window.addEventListener('resize', onResize);
       renderer.setAnimationLoop(render);
     }
@@ -103,6 +111,23 @@
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    /* ------------------------------------------------------------------
+       User tap: anchor a numbered message at last detected pose
+    ------------------------------------------------------------------*/
+    function onSelect () {
+      if (!lastHitPose) return; // nothing detected
+
+      // Create numbered marker
+      msgCount += 1;
+      const marker = makeTextSprite(String(msgCount));
+
+      const { position, orientation } = lastHitPose.transform;
+      marker.position.set(position.x, position.y, position.z);
+      marker.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
+
+      scene.add(marker);
     }
 
     /* ------------------------------------------------------------------
@@ -116,7 +141,7 @@
         const session        = renderer.xr.getSession();
         const referenceSpace = renderer.xr.getReferenceSpace();
 
-        /* --- Lazy‑instantiate hit‑test source --------------------------------*/
+        /* --- Lazy‑instantiate hit‑test source ------------------------------*/
         if (!hitTestSourceRequested) {
           session.requestReferenceSpace('viewer')
             .then(space => session.requestHitTestSource({ space }))
@@ -125,6 +150,7 @@
           session.addEventListener('end', () => {
             hitTestSourceRequested = false;
             hitTestSource = null;
+            lastHitPose = null;
             firstSurfaceFound = false;
             statusEl.textContent = 'Scanning environment…';
             statusEl.classList.remove('hidden');
@@ -132,21 +158,22 @@
           hitTestSourceRequested = true;
         }
 
-        /* --- XR Plane detection (incubations) --------------------------------*/
+        /* --- Plane detection banner ---------------------------------------*/
         const planes = frame.worldInformation?.detectedPlanes;
-        const planeCount = planes ? planes.size : 0;
-        if (planeCount && !firstSurfaceFound) {
+        if (planes?.size && !firstSurfaceFound) {
           firstSurfaceFound = true;
           statusEl.classList.add('hidden');
         }
 
-        /* --- Hit‑test using depth / planes -----------------------------------*/
+        /* --- Hit‑test ------------------------------------------------------*/
         hasHit = false;
         if (hitTestSource) {
           const hits = frame.getHitTestResults(hitTestSource);
           if (hits.length) {
             const hitPose = hits[0].getPose(referenceSpace);
             if (hitPose) {
+              lastHitPose = hitPose; // store for anchoring
+
               const { position, orientation } = hitPose.transform;
               previewSprite.position.set(position.x, position.y, position.z);
               previewSprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
@@ -159,10 +186,13 @@
             }
           }
         }
-        if (!hasHit) previewSprite.visible = false;
+        if (!hasHit) {
+          previewSprite.visible = false;
+          lastHitPose = null;
+        }
       }
 
-      /* --- Crosshair visual --------------------------------------------------*/
+      /* --- Crosshair visuals ----------------------------------------------*/
       const highlight = hasHit ? 0.015 : 0;
       const scale = baseScale + highlight + basePulse;
       crosshair.scale.set(scale, scale, 1);
@@ -172,7 +202,7 @@
     }
 
     /* ------------------------------------------------------------------
-       Helpers
+       Helper functions
     ------------------------------------------------------------------*/
     function makeCrosshairSprite () {
       const size = 256;
@@ -199,7 +229,7 @@
       canvas.width = canvas.height = size;
       const ctx = canvas.getContext('2d');
 
-      ctx.font = 'bold 80px sans-serif';
+      ctx.font = 'bold 120px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = '#00ff88';
