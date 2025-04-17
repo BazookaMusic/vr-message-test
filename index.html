@@ -3,41 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>AR Message Placer</title>
+  <title>XRKit Simple Cube</title>
   <style>
-    /* Dark theme */
     body {
       margin: 0;
-      font-family: system-ui, sans-serif;
       background: #000;
       color: #fff;
+      font-family: system-ui, sans-serif;
       overflow: hidden;
-    }
-
-    #ui {
-      position: absolute;
-      top: 0;
-      left: 0;
-      padding: 8px 12px;
-      pointer-events: none;
-      font-size: 14px;
-      opacity: 0.8;
     }
   </style>
 </head>
 <body>
-  <!-- Simple overlay instructions -->
-  <div id="ui">Tap on a surface to place a message</div>
-
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.175.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.175.0/examples/jsm/webxr/ARButton.js';
 
-    let camera, scene, renderer;
-    let controller, reticle;
-    let hitTestSource = null;
-    let hitTestSourceRequested = false;
-    let hasHit = false; // tracks whether current frame has a valid surface hit
+    let scene, camera, renderer;
+    let cube;
 
     init();
 
@@ -46,8 +29,8 @@
       scene = new THREE.Scene();
       camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-      // Lights
-      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+      // Basic ambient light so the cube is visible
+      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
       scene.add(light);
 
       // Renderer
@@ -57,25 +40,23 @@
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      // AR session button with DOM overlay so taps work
-      const sessionInit = {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay', 'local-floor'],
-        domOverlay: { root: document.body }
-      };
-      document.body.appendChild(ARButton.createButton(renderer, sessionInit));
+      // AR button
+      document.body.appendChild(
+        ARButton.createButton(renderer, {
+          optionalFeatures: ['dom-overlay'],
+          domOverlay: { root: document.body }
+        })
+      );
 
-      // Reticle helper (always visible)
-      const ringGeo = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-      const ringMat = new THREE.MeshBasicMaterial({ color: 0x666666, side: THREE.DoubleSide });
-      reticle = new THREE.Mesh(ringGeo, ringMat);
-      reticle.visible = true; // always show
-      scene.add(reticle);
+      // Cube: 20 cm each side
+      const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+      const material = new THREE.MeshNormalMaterial();
+      cube = new THREE.Mesh(geometry, material);
 
-      // Controller for screen taps
-      controller = renderer.xr.getController(0);
-      controller.addEventListener('select', onSelect);
-      scene.add(controller);
+      // Place cube 0.5 m in front of the camera (local space)
+      cube.position.set(0, 0, -0.5);
+      camera.add(cube); // attach so it stays at constant distance
+      scene.add(camera);
 
       window.addEventListener('resize', onResize);
       renderer.setAnimationLoop(render);
@@ -87,91 +68,10 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    // === Message placement ===
-    function onSelect() {
-      if (!hasHit) return; // only place when we have a valid surface
-
-      const text = prompt('Enter your message');
-      if (!text) return;
-
-      const sprite = makeTextSprite(text);
-      // Place at reticle pose (which is already positioned on the surface)
-      sprite.position.copy(reticle.position);
-      sprite.quaternion.copy(reticle.quaternion);
-      scene.add(sprite);
-    }
-
-    // Create a canvas‑based texture & Sprite so the text is a real 3‑D object
-    function makeTextSprite(message) {
-      const canvas = document.createElement('canvas');
-      const size = 512; // power‑of‑two texture
-      canvas.width = canvas.height = size;
-
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'rgba(0,0,0,0)';
-      ctx.fillRect(0, 0, size, size);
-
-      ctx.font = 'bold 80px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(message, size / 2, size / 2, size - 60);
-
-      const texture = new THREE.CanvasTexture(canvas);
-      const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-      const sprite = new THREE.Sprite(material);
-      const scale = 0.4; // metres
-      sprite.scale.set(scale, scale * (canvas.height / canvas.width), 1);
-      return sprite;
-    }
-
-    // Temporary vectors reused each frame
-    const forward = new THREE.Vector3();
-
-    // === Main render / hit‑test loop ===
-    function render(timestamp, frame) {
-      if (frame) {
-        const referenceSpace = renderer.xr.getReferenceSpace();
-        const session = renderer.xr.getSession();
-
-        if (!hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer').then((refSpace) => {
-            session.requestHitTestSource({ space: refSpace }).then((source) => {
-              hitTestSource = source;
-            });
-          });
-
-          session.addEventListener('end', () => {
-            hitTestSourceRequested = false;
-            hitTestSource = null;
-          });
-
-          hitTestSourceRequested = true;
-        }
-
-        hasHit = false; // reset each frame
-
-        if (hitTestSource) {
-          const hitTestResults = frame.getHitTestResults(hitTestSource);
-          if (hitTestResults.length) {
-            const hit = hitTestResults[0];
-            const pose = hit.getPose(referenceSpace);
-            const { position, orientation } = pose.transform;
-            reticle.position.set(position.x, position.y, position.z);
-            reticle.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
-            reticle.material.color.set(0x00ff88); // green when hit
-            hasHit = true;
-          }
-        }
-
-        if (!hasHit) {
-          // No surface found => keep reticle 1.5 m in front of camera, gray color
-          camera.getWorldDirection(forward);
-          reticle.position.copy(camera.position).add(forward.multiplyScalar(1.5));
-          reticle.quaternion.copy(camera.quaternion);
-          reticle.material.color.set(0x666666); // gray
-        }
-      }
+    function render() {
+      // Optional: slow rotation for visual feedback
+      cube.rotation.x += 0.01;
+      cube.rotation.y += 0.02;
 
       renderer.render(scene, camera);
     }
