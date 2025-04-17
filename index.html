@@ -3,29 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>XRKit Anchored Messages with XRAnchors</title>
+  <title>XRKit Anchored Messages – Plane‑Based</title>
   <style>
-    body {
-      margin: 0;
-      background: #000;
-      color: #fff;
-      font-family: system-ui, sans-serif;
-      overflow: hidden;
-    }
-    #status {
-      position: absolute;
-      left: 50%;
-      top: 10%;
-      transform: translateX(-50%);
-      font-size: 1rem;
-      padding: 6px 12px;
-      background: rgba(0, 0, 0, 0.6);
-      border-radius: 8px;
-      opacity: 0.85;
-      pointer-events: none;
-      transition: opacity 0.3s;
-    }
-    #status.hidden { opacity: 0; }
+    body{margin:0;background:#000;color:#fff;font-family:system-ui,sans-serif;overflow:hidden}
+    #status{position:absolute;left:50%;top:10%;transform:translateX(-50%);font-size:1rem;padding:6px 12px;background:rgba(0,0,0,.6);border-radius:8px;opacity:.85;pointer-events:none;transition:opacity .3s}
+    #status.hidden{opacity:0}
   </style>
 </head>
 <body>
@@ -35,229 +17,163 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.175.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.175.0/examples/jsm/webxr/ARButton.js';
 
-    /* ------------------------------------------------------------------
-       Globals
-    ------------------------------------------------------------------*/
+    /* -------------------------------------------------- */
     let scene, camera, renderer;
     let crosshair, previewSprite;
     const baseScale = 0.05;
 
-    // XR resources
+    // XR state
     let hitTestSource = null;
     let hitTestSourceRequested = false;
-    let lastHitResult = null;   // store full hit‑test result for anchor creation
+    let lastHit = null;          // XRHitTestResult
+    let lastHitPose = null;      // XRRigidTransform in local‑floor space
     let hasHit = false;
     let firstSurfaceFound = false;
 
-    // Anchored markers
-    const anchors = []; // { anchor, sprite }
+    // Plane map & anchors
+    const anchored = []; // { anchor, sprite }
     let msgCount = 0;
 
     const statusEl = document.getElementById('status');
 
-    /* ------------------------------------------------------------------
-       Boot
-    ------------------------------------------------------------------*/
     init();
 
-    function init () {
-      scene  = new THREE.Scene();
-      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+    function init(){
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight,.01,20);
+      scene.add(new THREE.HemisphereLight(0xffffff,0x444444,1.2));
 
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(window.devicePixelRatio);
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer = new THREE.WebGLRenderer({antialias:true,alpha:true});
+      renderer.setPixelRatio(devicePixelRatio);
+      renderer.setSize(innerWidth,innerHeight);
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      /* --- Request AR session ----------------------------------------------*/
       const sessionInit = {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: [
-          'anchors',          // <-- new
-          'dom-overlay',
-          'local-floor',
-          'plane-detection',
-          'depth-sensing'
-        ],
-        domOverlay: { root: document.body },
-        depthSensing: {
-          usagePreference: ['cpu-optimized'],
-          dataFormatPreference: ['luminance-alpha']
-        }
+        requiredFeatures:['hit-test'],
+        optionalFeatures:['anchors','plane-detection','depth-sensing','dom-overlay','local-floor'],
+        domOverlay:{root:document.body},
+        depthSensing:{usagePreference:['cpu-optimized'],dataFormatPreference:['luminance-alpha']}
       };
-      document.body.appendChild(ARButton.createButton(renderer, sessionInit));
+      document.body.appendChild(ARButton.createButton(renderer,sessionInit));
 
-      /* --- Scene content ----------------------------------------------------*/
-      crosshair = makeCrosshairSprite();
-      crosshair.position.set(0, 0, -0.8);
-      camera.add(crosshair);
-      scene.add(camera);
+      crosshair = makeCrosshair();
+      crosshair.position.set(0,0,-0.8);
+      camera.add(crosshair);scene.add(camera);
 
-      previewSprite = makeTextSprite('Detected!');
-      previewSprite.visible = false;
-      scene.add(previewSprite);
+      previewSprite = makeLabel('Detected!');previewSprite.visible=false;scene.add(previewSprite);
 
-      /* --- Tap handling -----------------------------------------------------*/
       const controller = renderer.xr.getController(0);
-      controller.addEventListener('select', onSelect);
+      controller.addEventListener('select',onSelect);
       scene.add(controller);
 
-      window.addEventListener('resize', onResize);
+      addEventListener('resize',()=>{
+        camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);
+      });
       renderer.setAnimationLoop(render);
     }
 
-    function onResize () {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+    /* ------------------------ tap --------------------- */
+    async function onSelect(){
+      if(!lastHit) return;
+      const session = renderer.xr.getSession();
+      if(!session) return;
+
+      msgCount+=1;
+      const sprite = makeLabel(String(msgCount));
+      sprite.visible=false;scene.add(sprite);
+
+      // Prefer plane‑based anchor when available
+      let anchorPromise;
+      if(lastHit.plane && lastHit.plane.createAnchor){
+        // pose relative to plane space
+        const planeSpace = lastHit.plane.planeSpace;
+        const poseInPlane = new XRRigidTransform(); // identity puts anchor at plane center
+        anchorPromise = lastHit.plane.createAnchor(poseInPlane);
+      }else if(lastHit.createAnchor){
+        anchorPromise = lastHit.createAnchor();
+      }
+
+      if(anchorPromise){
+        try{
+          const anchor = await anchorPromise;
+          anchored.push({anchor,sprite});
+          return;
+        }catch(e){/* fallthrough */}
+      }
+      // fallback to static pose
+      if(lastHitPose){
+        const {position,orientation}=lastHitPose.transform;
+        sprite.position.set(position.x,position.y,position.z);
+        sprite.quaternion.set(orientation.x,orientation.y,orientation.z,orientation.w);
+        sprite.visible=true;
+      }
     }
 
-    /* ------------------------------------------------------------------
-       On user tap — create XRAnchor + numbered sprite
-    ------------------------------------------------------------------*/
-    function onSelect () {
-      if (!lastHitResult || !lastHitResult.createAnchor) return; // anchors unsupported or no hit
+    /* -------------------- render loop ---------------- */
+    function render(t,frame){
+      const pulse = 0.002*Math.sin(Date.now()*0.005);
+      if(frame){
+        const refSpace = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
 
-      msgCount += 1;
-      const sprite = makeTextSprite(String(msgCount));
-      sprite.visible = false; // will become visible when anchor pose is tracked
-      scene.add(sprite);
-
-      // Create anchor at the hit pose
-      lastHitResult.createAnchor().then(anchor => {
-        anchors.push({ anchor, sprite });
-      }).catch(() => {
-        // Fallback: show sprite at static pose
-        const { position, orientation } = lastHitResult.getPose(renderer.xr.getReferenceSpace()).transform;
-        sprite.position.set(position.x, position.y, position.z);
-        sprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
-        sprite.visible = true;
-      });
-    }
-
-    /* ------------------------------------------------------------------
-       Render loop
-    ------------------------------------------------------------------*/
-    function render (timestamp, frame) {
-      const t = Date.now() * 0.005;
-      const basePulse = 0.002 * Math.sin(t);
-
-      if (frame) {
-        const session        = renderer.xr.getSession();
-        const referenceSpace = renderer.xr.getReferenceSpace();
-
-        /* --- Lazy‑instantiate hit‑test source ------------------------------*/
-        if (!hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer')
-            .then(space => session.requestHitTestSource({ space }))
-            .then(source => { hitTestSource = source; });
-
-          session.addEventListener('end', () => {
-            hitTestSourceRequested = false;
-            hitTestSource = null;
-            firstSurfaceFound = false;
-            statusEl.textContent = 'Scanning environment…';
-            statusEl.classList.remove('hidden');
-            anchors.length = 0;
-          });
-          hitTestSourceRequested = true;
+        // init hit test
+        if(!hitTestSourceRequested){
+          session.requestReferenceSpace('viewer').then(space=>session.requestHitTestSource({space})).then(src=>hitTestSource=src);
+          session.addEventListener('end',()=>{hitTestSource=null;hitTestSourceRequested=false;firstSurfaceFound=false;anchored.length=0;statusEl.classList.remove('hidden');statusEl.textContent='Scanning environment…';});
+          hitTestSourceRequested=true;
         }
 
-        /* --- Update anchored sprites --------------------------------------*/
-        anchors.forEach(({ anchor, sprite }) => {
-          const pose = frame.getPose(anchor.anchorSpace, referenceSpace);
-          if (pose) {
-            const { position, orientation } = pose.transform;
-            sprite.position.set(position.x, position.y, position.z);
-            sprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
-            sprite.visible = true;
+        // update anchors
+        anchored.forEach(obj=>{
+          const pose=frame.getPose(obj.anchor.anchorSpace,refSpace);
+          if(pose && !pose.emulatedPosition){
+            const {position,orientation}=pose.transform;
+            obj.sprite.position.set(position.x,position.y,position.z);
+            obj.sprite.quaternion.set(orientation.x,orientation.y,orientation.z,orientation.w);
+            obj.sprite.visible=true;
           }
         });
 
-        /* --- Plane detection banner ---------------------------------------*/
+        // plane info for banner
         const planes = frame.worldInformation?.detectedPlanes;
-        if (planes?.size && !firstSurfaceFound) {
-          firstSurfaceFound = true;
-          statusEl.classList.add('hidden');
-        }
+        if(planes?.size && !firstSurfaceFound){firstSurfaceFound=true;statusEl.classList.add('hidden');}
 
-        /* --- Hit‑test raycast ---------------------------------------------*/
-        hasHit = false;
-        lastHitResult = null;
-        if (hitTestSource) {
-          const hits = frame.getHitTestResults(hitTestSource);
-          if (hits.length) {
-            const hit = hits[0];
-            const hitPose = hit.getPose(referenceSpace);
-            if (hitPose) {
-              lastHitResult = hit;
-              const { position, orientation } = hitPose.transform;
-              previewSprite.position.set(position.x, position.y, position.z);
-              previewSprite.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
-              previewSprite.visible = true;
-              hasHit = true;
-              if (!firstSurfaceFound) {
-                firstSurfaceFound = true;
-                statusEl.classList.add('hidden');
-              }
+        // hit test
+        hasHit=false;lastHit=null;lastHitPose=null;
+        if(hitTestSource){
+          const hits=frame.getHitTestResults(hitTestSource);
+          if(hits.length){
+            const hit=hits[0];
+            const pose=hit.getPose(refSpace);
+            if(pose && !pose.emulatedPosition){
+              hasHit=true;lastHit=hit;lastHitPose=pose;
+              const {position,orientation}=pose.transform;
+              previewSprite.position.set(position.x,position.y,position.z);
+              previewSprite.quaternion.set(orientation.x,orientation.y,orientation.z,orientation.w);
+              previewSprite.visible=true;
+              if(!firstSurfaceFound){firstSurfaceFound=true;statusEl.classList.add('hidden');}
             }
           }
         }
-        if (!hasHit) previewSprite.visible = false;
+        if(!hasHit) previewSprite.visible=false;
       }
 
-      /* --- Crosshair visuals ----------------------------------------------*/
-      const highlight = hasHit ? 0.015 : 0;
-      const scale = baseScale + highlight + basePulse;
-      crosshair.scale.set(scale, scale, 1);
-      crosshair.material.color.set(hasHit ? 0x00ff88 : 0xffffff);
+      const scl = baseScale+(hasHit?0.015:0)+pulse;
+      crosshair.scale.set(scl,scl,1);
+      crosshair.material.color.set(hasHit?0x00ff88:0xffffff);
 
-      renderer.render(scene, camera);
+      renderer.render(scene,camera);
     }
 
-    /* ------------------------------------------------------------------
-       Helpers
-    ------------------------------------------------------------------*/
-    function makeCrosshairSprite () {
-      const size = 256;
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = size;
-      const ctx = canvas.getContext('2d');
+    /* ---------------------- helpers ------------------ */
+    function makeCrosshair(){
+      const c=document.createElement('canvas');c.width=c.height=256;const ctx=c.getContext('2d');ctx.strokeStyle='#fff';ctx.lineWidth=12;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(128,25);ctx.lineTo(128,231);ctx.stroke();ctx.beginPath();ctx.moveTo(25,128);ctx.lineTo(231,128);ctx.stroke();
+      const tex=new THREE.CanvasTexture(c);const mat=new THREE.SpriteMaterial({map:tex,transparent:true});const s=new THREE.Sprite(mat);s.scale.set(baseScale,baseScale,1);return s;}
 
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 12;
-      ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(size / 2, size * 0.1); ctx.lineTo(size / 2, size * 0.9); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(size * 0.1, size / 2); ctx.lineTo(size * 0.9, size / 2); ctx.stroke();
-
-      const texture  = new THREE.CanvasTexture(canvas);
-      const material = new THREE.SpriteMaterial({ map: texture, transparent: true, color: 0xffffff });
-      const sprite   = new THREE.Sprite(material);
-      sprite.scale.set(baseScale, baseScale, 1);
-      return sprite;
-    }
-
-    function makeTextSprite (message) {
-      const size = 512;
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = size;
-      const ctx = canvas.getContext('2d');
-
-      ctx.font = 'bold 120px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#00ff88';
-      ctx.fillText(message, size / 2, size / 2, size - 60);
-
-      const texture  = new THREE.CanvasTexture(canvas);
-      const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-      const sprite   = new THREE.Sprite(material);
-      const scale    = 0.25;
-      sprite.scale.set(scale, scale * (canvas.height / canvas.width), 1);
-      return sprite;
-    }
+    function makeLabel(txt){
+      const size=512,can=document.createElement('canvas');can.width=can.height=size;const ctx=can.getContext('2d');ctx.font='bold 120px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#00ff88';ctx.fillText(txt,size/2,size/2,size-60);
+      const tex=new THREE.CanvasTexture(can);const mat=new THREE.SpriteMaterial({map:tex,transparent:true});const sp=new THREE.Sprite(mat);const sc=0.25;sp.scale.set(sc,sc*(can.height/can.width),1);return sp;}
   </script>
 </body>
 </html>
